@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 # @Author: Wenwen Yu
 # @Created Time: 7/9/2020 9:16 PM
-import glob
-import os
+
 from typing import *
 from pathlib import Path
 import warnings
@@ -17,13 +16,12 @@ import pandas as pd
 
 from . import documents
 from .documents import Document
-from utils.class_utils import vocab_cls
+from utils.class_utils import keys_vocab_cls, iob_labels_vocab_cls, entities_vocab_cls
 
 
 class PICKDataset(Dataset):
 
-    def __init__(self, entities_list: List,
-                 files_name: str = None,
+    def __init__(self, files_name: str = None,
                  boxes_and_transcripts_folder: str = 'boxes_and_transcripts',
                  images_folder: str = 'images',
                  entities_folder: str = 'entities',
@@ -31,10 +29,10 @@ class PICKDataset(Dataset):
                  resized_image_size: Tuple[int, int] = (480, 960),
                  keep_ratio: bool = True,
                  ignore_error: bool = False,
-                 training: bool = True,
+                 training: bool = True
                  ):
         '''
-        :param entities_list: list with entities
+
         :param files_name: containing training and validation samples list file.
         :param boxes_and_transcripts_folder: gt or ocr result containing transcripts, boxes and box entity type (optional).
         :param images_folder: whole images file folder
@@ -45,13 +43,9 @@ class PICKDataset(Dataset):
         :param ignore_error:
         :param training: True for train and validation mode, False for test mode. True will also load labels,
         and files_name and entities_file must be set.
-        :param image_ext: image extension, available: `.jpg`, `.png`. By default `.jpg` is used
         '''
         super().__init__()
 
-        self._entities_list = entities_list
-        self._image_ext = None
-        self._ann_ext = None
         self.iob_tagging_type = iob_tagging_type
         self.keep_ratio = keep_ratio
         self.ignore_error = ignore_error
@@ -71,7 +65,7 @@ class PICKDataset(Dataset):
         else:  # used for test mode
             self.boxes_and_transcripts_folder: Path = Path(boxes_and_transcripts_folder)
             self.images_folder: Path = Path(images_folder)
-
+        print("boxes_and_transcripts_folder",boxes_and_transcripts_folder)
         if not (self.boxes_and_transcripts_folder.exists() and self.images_folder.exists()):
             raise FileNotFoundError('Not contain boxes_and_transcripts floader {} or images folder {}.'
                                     .format(self.boxes_and_transcripts_folder.as_posix(),
@@ -86,39 +80,21 @@ class PICKDataset(Dataset):
     def __len__(self):
         return len(self.files_list)
 
-    def get_image_file(self, basename):
-        """
-        Return the complete name (fill the extension) from the basename.
-        """
-        if self._image_ext is None:
-            filename = list(self.images_folder.glob(f'**/{basename}.*'))[0]
-            self._image_ext = os.path.splitext(filename)[1]
-
-        return self.images_folder.joinpath(basename + self._image_ext)
-
-    def get_ann_file(self, basename):
-        """
-        Return the complete name (fill the extension) from the basename.
-        """
-        if self._ann_ext is None:
-            filename = list(self.boxes_and_transcripts_folder.glob(f'**/{basename}.*'))[0]
-            self._ann_ext = os.path.splitext(filename)[1]
-
-        return self.boxes_and_transcripts_folder.joinpath(basename + self._ann_ext)
-
     @overrides
     def __getitem__(self, index):
 
         if self.training:
             dataitem: pd.Series = self.files_list.iloc[index]
             # config file path
-            boxes_and_transcripts_file = self.get_ann_file(Path(dataitem['file_name']).stem)
-            image_file = self.get_image_file(Path(dataitem['file_name']).stem)
+            boxes_and_transcripts_file = self.boxes_and_transcripts_folder.joinpath(
+                Path(dataitem['file_name']).stem + '.tsv')
+            image_file = self.images_folder.joinpath(Path(dataitem['file_name']).stem + '.jpg')
             entities_file = self.entities_folder.joinpath(Path(dataitem['file_name']).stem + '.txt')
             # documnets_class = dataitem['document_class']
         else:
-            boxes_and_transcripts_file = self.get_ann_file(Path(self.files_list[index]).stem)
-            image_file = self.get_image_file(Path(self.files_list[index]).stem)
+            boxes_and_transcripts_file = self.boxes_and_transcripts_folder.joinpath(
+                Path(self.files_list[index]).stem + '.tsv')
+            image_file = self.images_folder.joinpath(Path(self.files_list[index]).stem + '.jpg')
 
         if not boxes_and_transcripts_file.exists() or not image_file.exists():
             if self.ignore_error and self.training:
@@ -132,13 +108,10 @@ class PICKDataset(Dataset):
             # TODO add read and save cache function, to speed up data loaders
 
             if self.training:
-                document = documents.Document(boxes_and_transcripts_file, image_file, entities_list=self._entities_list,
-                                              resized_image_size=self.resized_image_size,
-                                              iob_tagging_type=self.iob_tagging_type, entities_file=entities_file,
-                                              training=self.training)
+                document = documents.Document(boxes_and_transcripts_file, image_file, self.resized_image_size,
+                                              self.iob_tagging_type, entities_file, training=self.training)
             else:
-                document = documents.Document(boxes_and_transcripts_file, image_file, entities_list=self._entities_list,
-                                              resized_image_size=self.resized_image_size,
+                document = documents.Document(boxes_and_transcripts_file, image_file, self.resized_image_size,
                                               image_index=index, training=self.training)
             return document
         except Exception as e:
@@ -165,9 +138,9 @@ class BatchCollateFn(object):
 
     def __call__(self, batch_list: List[Document]):
 
-        # dynamic calculate max boxes number of batch,
+        # dynamic calculate max baoxes number of batch,
         # this is suitable to one gpus or multi-nodes multi-gpus trianing mode, due to pytorch distributed training strategy.
-        max_boxes_num_batch = max([x.boxes_num for x in batch_list])
+        max_boxes_num_batch =  max([x.boxes_num for x in batch_list])
         max_transcript_len = max([x.transcript_len for x in batch_list])
 
         # fix MAX_BOXES_NUM and MAX_TRANSCRIPT_LEN. this ensures batch has same shape, but lead to waste memory and slow speed..
@@ -197,7 +170,7 @@ class BatchCollateFn(object):
         text_segments_padded_list = [F.pad(torch.LongTensor(x.text_segments[0]),
                                            (0, max_transcript_len - x.transcript_len,
                                             0, max_boxes_num_batch - x.boxes_num),
-                                           value=vocab_cls['keys'].stoi['<pad>'])
+                                           value=keys_vocab_cls.stoi['<pad>'])
                                      for i, x in enumerate(batch_list)]
         text_segments_batch_tensor = torch.stack(text_segments_padded_list, dim=0)
 
@@ -219,7 +192,7 @@ class BatchCollateFn(object):
             iob_tags_label_padded_list = [F.pad(torch.LongTensor(x.iob_tags_label),
                                                 (0, max_transcript_len - x.transcript_len,
                                                  0, max_boxes_num_batch - x.boxes_num),
-                                                value=vocab_cls['iob_labels'].stoi['<pad>'])
+                                                value=iob_labels_vocab_cls.stoi['<pad>'])
                                           for i, x in enumerate(batch_list)]
             iob_tags_label_batch_tensor = torch.stack(iob_tags_label_padded_list, dim=0)
 
@@ -228,10 +201,6 @@ class BatchCollateFn(object):
             image_indexs_list = [x.image_index for x in batch_list]
             image_indexs_tensor = torch.tensor(image_indexs_list)
 
-        # For easier debug.
-        filenames = [doc.image_filename for doc in batch_list]
-
-        # Convert the data into dict.
         if self.training:
             batch = dict(whole_image=image_batch_tensor,
                          relation_features=relation_features_batch_tensor,
@@ -239,8 +208,7 @@ class BatchCollateFn(object):
                          text_length=text_length_batch_tensor,
                          boxes_coordinate=boxes_coordinate_batch_tensor,
                          mask=mask_batch_tensor,
-                         iob_tags_label=iob_tags_label_batch_tensor,
-                         filenames=filenames)
+                         iob_tags_label=iob_tags_label_batch_tensor)
         else:
             batch = dict(whole_image=image_batch_tensor,
                          relation_features=relation_features_batch_tensor,
@@ -248,7 +216,6 @@ class BatchCollateFn(object):
                          text_length=text_length_batch_tensor,
                          boxes_coordinate=boxes_coordinate_batch_tensor,
                          mask=mask_batch_tensor,
-                         image_indexs=image_indexs_tensor,
-                         filenames=filenames)
+                         image_indexs=image_indexs_tensor)
 
         return batch
